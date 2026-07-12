@@ -1,6 +1,12 @@
-# loon-baseline
+<p align="center">
+  <img src="img/logo.png" alt="loon" width="180">
+</p>
 
-The reusable **host baseline** for sites built on [loon](https://github.com/ameNZB/loon).
+<h1 align="center">loon-baseline</h1>
+
+<p align="center">The reusable host baseline for sites built on the <a href="https://github.com/ameNZB/loon">loon</a> plugin framework.</p>
+
+---
 
 loon is a plugin framework, not a runnable site. It deliberately has **no login,
 session, or password seam** — auth is security-sensitive and host-shaped, so
