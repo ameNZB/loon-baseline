@@ -1,6 +1,40 @@
 package password
 
-import "testing"
+import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"testing"
+
+	"golang.org/x/crypto/bcrypt"
+)
+
+// TestProdSchemeInterop pins the wire-compatibility contract with the loon prod
+// site's pkg/models/user.go (HMAC-SHA256 → StdEncoding → bcrypt cost 14): a hash
+// made by either scheme must verify under the other, so prod can adopt this
+// package without invalidating a single stored hash.
+func TestProdSchemeInterop(t *testing.T) {
+	pepper := []byte("prod-pepper-value")
+	const pw = "correct horse battery staple"
+
+	// Reproduce prod's exact peppered input + a cost-14 hash.
+	mac := hmac.New(sha256.New, pepper)
+	mac.Write([]byte(pw))
+	peppered := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+	prodHash, err := bcrypt.GenerateFromPassword([]byte(peppered), 14)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h := Hasher{Pepper: pepper, Cost: 14}
+	if !h.Check(string(prodHash), pw) {
+		t.Fatal("baseline could not verify a prod-scheme hash — schemes diverge")
+	}
+	blHash, _ := h.Hash(pw)
+	if bcrypt.CompareHashAndPassword([]byte(blHash), []byte(peppered)) != nil {
+		t.Fatal("prod scheme could not verify a baseline hash")
+	}
+}
 
 func TestHashCheck(t *testing.T) {
 	h := Hasher{Pepper: []byte("pepper-key")}
