@@ -1,118 +1,133 @@
-// Package session issues and verifies stateless, HMAC-signed session cookies —
-// the plumbing every loon host needs and that the framework deliberately leaves
-// to the host (loon/core has no login/session seam by design). A token carries
-// the user id, an issue time (for server-side expiry), and an "epoch" the host
-// can bump to invalidate every outstanding session after a password change.
+// Package session is the loon host session layer, extracted VERBATIM from the
+// production site's wiring (cmd/main.go + web/handlers/handlers.go) so a host
+// that adopts it is cookie-compatible with a site already running the prod
+// scheme — no logout wave, no CSRF break.
 //
-// Extracted from the loon demo site's inline cookie code so the demo and a real
-// site share one implementation.
+// Mechanism: gin-contrib/sessions with a cookie store — a server-signed session
+// MAP (not a bare token), which is also where a double-submit CSRF token can
+// live. A login stamps four keys:
+//
+//	user_id             int64  — who
+//	login_at            int64  — unix; server-side expiry (MaxAge)
+//	login_ip            string — hashed client IP at login (admin IP pinning)
+//	password_changed_at int64  — unix; sessions older than the DB stamp are dead
+//
+// The key names and types are the production contract. Do not rename them.
 package session
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
-	"strconv"
-	"strings"
+	"net/http"
 	"time"
 
+	"github.com/gin-contrib/sessions"
+	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
 )
 
-// Manager signs and reads session cookies with a single HMAC key. The zero value
-// is unusable — set Secret. Cookie/MaxAge/Path fall back to sane defaults.
-type Manager struct {
-	Secret []byte        // HMAC-SHA256 key (required; ≥32 bytes recommended)
-	Cookie string        // cookie name (default "loon_session")
-	MaxAge time.Duration // cookie + server-side lifetime (default 7 days)
-	Secure bool          // set the Secure flag (HTTPS-only); false for plain-HTTP dev
-	Path   string        // cookie path (default "/")
+// Config builds the session middleware. Secret is required (≥32 bytes — the
+// prod site log.Fatals below that; hosts should enforce the same).
+type Config struct {
+	Secret []byte
+	// Name is the cookie name. Default "mysession" — the prod site's name, kept
+	// so adopting this package preserves every live session.
+	Name string
+	// MaxAge is both the cookie lifetime and the server-side session lifetime
+	// (enforced against login_at). Default 7 days.
+	MaxAge time.Duration
+	// Secure sets the Secure cookie flag (HTTPS-only). Off for plain-HTTP dev.
+	Secure bool
 }
 
-// Claims are the verified contents of a session token.
-type Claims struct {
-	UserID int64
-	Issued time.Time
-	Epoch  int64 // host-defined; mismatch vs the user's current epoch ⇒ session is stale
+func (cfg Config) name() string {
+	if cfg.Name == "" {
+		return "mysession"
+	}
+	return cfg.Name
 }
 
-func (m Manager) cookie() string { if m.Cookie == "" { return "loon_session" }; return m.Cookie }
-func (m Manager) path() string   { if m.Path == "" { return "/" }; return m.Path }
-func (m Manager) maxAge() time.Duration {
-	if m.MaxAge <= 0 {
+// MaxAgeD returns the effective session lifetime.
+func (cfg Config) MaxAgeD() time.Duration {
+	if cfg.MaxAge <= 0 {
 		return 7 * 24 * time.Hour
 	}
-	return m.MaxAge
+	return cfg.MaxAge
 }
 
-// Issue sets a signed session cookie for the user.
-func (m Manager) Issue(c *gin.Context, userID, epoch int64) {
-	c.SetCookie(m.cookie(), m.token(userID, epoch), int(m.maxAge().Seconds()), m.path(), "", m.Secure, true)
+// Middleware returns the sessions middleware; install it on the engine before
+// any route that logs in or reads the user. Options mirror prod: SameSite Lax
+// (cookie rides top-level GETs from external links so users stay logged in;
+// cross-origin POSTs don't carry it, and a double-submit CSRF token covers the
+// rest — see the prod comment at cmd/main.go:1139).
+func (cfg Config) Middleware() gin.HandlerFunc {
+	store := cookie.NewStore(cfg.Secret)
+	store.Options(sessions.Options{
+		Path:     "/",
+		MaxAge:   int(cfg.MaxAgeD().Seconds()),
+		HttpOnly: true,
+		Secure:   cfg.Secure,
+		SameSite: http.SameSiteLaxMode,
+	})
+	return sessions.Sessions(cfg.name(), store)
 }
 
-// Clear removes the session cookie (logout).
-func (m Manager) Clear(c *gin.Context) {
-	c.SetCookie(m.cookie(), "", -1, m.path(), "", m.Secure, true)
+// Issue stamps a logged-in session. It clears any pre-login content first
+// (CSRF token, OAuth state) — starting from a known-clean state is the
+// session-fixation defence-in-depth contract prod established.
+//
+// ipHash is the HASHED client IP ("" to skip IP pinning); pwChangedAt is the
+// user's password_changed_at unix stamp (0 when the host has no such column).
+func Issue(c *gin.Context, userID int64, ipHash string, pwChangedAt int64) error {
+	s := sessions.Default(c)
+	s.Clear()
+	s.Set("user_id", userID)
+	s.Set("login_at", time.Now().Unix())
+	if ipHash != "" {
+		s.Set("login_ip", ipHash)
+	}
+	s.Set("password_changed_at", pwChangedAt)
+	return s.Save()
 }
 
-// Read verifies the request's session cookie and returns its claims. ok is false
-// when the cookie is missing, tampered, or past MaxAge.
-func (m Manager) Read(c *gin.Context) (Claims, bool) {
-	raw, err := c.Cookie(m.cookie())
-	if err != nil || raw == "" {
-		return Claims{}, false
-	}
-	payloadB64, sig, found := strings.Cut(raw, ".")
-	if !found {
-		return Claims{}, false
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(payloadB64)
-	if err != nil {
-		return Claims{}, false
-	}
-	if !hmac.Equal([]byte(sig), []byte(m.mac(payload))) {
-		return Claims{}, false
-	}
-	uid, issued, epoch, ok := parsePayload(string(payload))
-	if !ok {
-		return Claims{}, false
-	}
-	c2 := Claims{UserID: uid, Issued: time.Unix(issued, 0), Epoch: epoch}
-	if time.Since(c2.Issued) > m.maxAge() {
-		return Claims{}, false
-	}
-	return c2, true
+// Clear wipes the session (logout, or invalidation on a failed auth check —
+// prod clears stale cookies rather than leaving them to re-fail every request).
+func Clear(c *gin.Context) error {
+	s := sessions.Default(c)
+	s.Clear()
+	return s.Save()
 }
 
-// token = base64url(payload) + "." + base64url(hmac(payload)), where payload is
-// "uid|issued|epoch". Base64-encoding the payload keeps the '.' split unambiguous.
-func (m Manager) token(userID, epoch int64) string {
-	payload := strconv.FormatInt(userID, 10) + "|" +
-		strconv.FormatInt(time.Now().Unix(), 10) + "|" +
-		strconv.FormatInt(epoch, 10)
-	return base64.RawURLEncoding.EncodeToString([]byte(payload)) + "." + m.mac([]byte(payload))
+// Claims are the stamped values read back from the session.
+type Claims struct {
+	UserID            int64
+	LoginAt           int64 // unix
+	LoginIP           string
+	PasswordChangedAt int64 // unix
 }
 
-func (m Manager) mac(payload []byte) string {
-	h := hmac.New(sha256.New, m.Secret)
-	h.Write(payload)
-	return base64.RawURLEncoding.EncodeToString(h.Sum(nil))
+// Read returns the session claims; ok is false when no user_id is stamped.
+// Expiry and invalidation checks belong to the caller (webauth) — Read only
+// decodes.
+func Read(c *gin.Context) (Claims, bool) {
+	s := sessions.Default(c)
+	uid := idFromAny(s.Get("user_id"))
+	if uid == 0 {
+		return Claims{}, false
+	}
+	cl := Claims{UserID: uid}
+	cl.LoginAt, _ = s.Get("login_at").(int64)
+	cl.LoginIP, _ = s.Get("login_ip").(string)
+	cl.PasswordChangedAt = idFromAny(s.Get("password_changed_at"))
+	return cl, true
 }
 
-func parsePayload(s string) (uid, issued, epoch int64, ok bool) {
-	parts := strings.Split(s, "|")
-	if len(parts) != 3 {
-		return 0, 0, 0, false
+// idFromAny coerces the gob round-trip: values stored as int come back int,
+// stored as int64 come back int64 (prod's sessionIDFromAny, generalized).
+func idFromAny(v any) int64 {
+	switch n := v.(type) {
+	case int64:
+		return n
+	case int:
+		return int64(n)
 	}
-	var err error
-	if uid, err = strconv.ParseInt(parts[0], 10, 64); err != nil {
-		return 0, 0, 0, false
-	}
-	if issued, err = strconv.ParseInt(parts[1], 10, 64); err != nil {
-		return 0, 0, 0, false
-	}
-	if epoch, err = strconv.ParseInt(parts[2], 10, 64); err != nil {
-		return 0, 0, 0, false
-	}
-	return uid, issued, epoch, true
+	return 0
 }
