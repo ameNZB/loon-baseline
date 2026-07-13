@@ -51,6 +51,14 @@ func (m *memStore) ByEmail(_ context.Context, email string) (*users.User, error)
 	}
 	return nil, users.ErrNotFound
 }
+func (m *memStore) IDByName(_ context.Context, name string) (int64, error) {
+	for _, u := range m.byID {
+		if u.Username == name {
+			return u.ID, nil
+		}
+	}
+	return 0, users.ErrNotFound
+}
 func (m *memStore) UpdatePasswordHash(_ context.Context, id int64, hash string) error {
 	if u, ok := m.byID[id]; ok {
 		u.PasswordHash = hash

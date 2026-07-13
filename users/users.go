@@ -46,6 +46,10 @@ type Store interface {
 	ByID(ctx context.Context, id int64) (*User, error)
 	ByUsername(ctx context.Context, username string) (*User, error)
 	ByEmail(ctx context.Context, email string) (*User, error)
+	// IDByName resolves a username to just its id (ErrNotFound if none) — a
+	// lightweight lookup for callers that need only the id, e.g. attributing a
+	// failed login attempt to the targeted account. Matches loginlog.Resolver.
+	IDByName(ctx context.Context, username string) (int64, error)
 	UpdatePasswordHash(ctx context.Context, id int64, hash string) error
 	SetRole(ctx context.Context, id int64, role core.Role) error
 	List(ctx context.Context, offset, limit int) (users []*User, total int, err error)

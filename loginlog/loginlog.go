@@ -44,6 +44,35 @@ type Store interface {
 	RecentAll(ctx context.Context, limit int) ([]Entry, error)            // admin: everyone
 }
 
+// Resolver looks up a user id by the exact username typed at login. It matches
+// users.Store.IDByName, so a store-based host passes store.IDByName directly.
+// Any error (including not-found) means "couldn't attribute" — attribution is a
+// best-effort hint, never load-bearing.
+type Resolver func(ctx context.Context, username string) (int64, error)
+
+// Attempt records one login attempt with the standard policy, so every host
+// audits logins identically instead of re-implementing this glue:
+//   - hash the client IP (HashIP) — the raw address is never stored;
+//   - for a FAILED attempt on a KNOWN username, attribute it to that account
+//     (via resolve) so it surfaces in the user's own sign-in history.
+//
+// Call once from the host's login handler: pass the authenticated user's id on
+// success (0 on failure), and resolve=nil to skip attribution. Recording is
+// best-effort — the returned error is for logging, not control flow.
+func Attempt(ctx context.Context, store Store, resolve Resolver, salt, ip, username string, userID int64, success bool) error {
+	if userID == 0 && resolve != nil {
+		if id, err := resolve(ctx, username); err == nil {
+			userID = id
+		}
+	}
+	return store.Record(ctx, Entry{
+		UserID:   userID,
+		Username: username,
+		IPHash:   HashIP(salt, ip),
+		Success:  success,
+	})
+}
+
 // HashIP returns a salted SHA-256 hex digest of ip, or "" if ip is empty.
 // Hashing keeps raw IPs out of the DB while still letting the same address be
 // recognised across attempts. Pass a per-deployment secret salt.

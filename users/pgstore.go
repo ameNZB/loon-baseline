@@ -65,6 +65,15 @@ func (s *PGStore) ByEmail(ctx context.Context, email string) (*User, error) {
 	return scanUser(s.db.QueryRowContext(ctx, `SELECT `+userCols+` FROM users WHERE email <> '' AND lower(email) = lower($1)`, email))
 }
 
+func (s *PGStore) IDByName(ctx context.Context, username string) (int64, error) {
+	var id int64
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM users WHERE lower(username) = lower($1)`, username).Scan(&id)
+	if err == sql.ErrNoRows {
+		return 0, ErrNotFound
+	}
+	return id, err
+}
+
 func (s *PGStore) UpdatePasswordHash(ctx context.Context, id int64, hash string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE users SET password_hash = $2 WHERE id = $1`, id, hash)
 	return err
