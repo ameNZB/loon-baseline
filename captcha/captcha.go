@@ -118,6 +118,12 @@ func (v *Verifier) Middleware() gin.HandlerFunc {
 	}
 }
 
+// WidgetHTML renders the widget with default options. Unlike Widget, its
+// signature uses only stdlib types (no captcha.Option), so a plugin that can't
+// import this package can still consume a registered Verifier as a capability
+// via a structural interface { Verify(ctx,string,string) error; WidgetHTML() template.HTML }.
+func (v *Verifier) WidgetHTML() template.HTML { return v.Widget() }
+
 type options struct{ theme, size, appearance string }
 
 // Option tunes the rendered widget.
