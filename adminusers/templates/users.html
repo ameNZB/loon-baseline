@@ -1,0 +1,38 @@
+{{if .Msg}}<div class="alert alert-success py-1 px-2 mb-2">{{.Msg}}</div>{{end}}
+{{if .Err}}<div class="alert alert-danger py-1 px-2 mb-2">{{.Err}}</div>{{end}}
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-sm mb-0 align-middle">
+      <thead>
+        <tr><th>User</th><th>Email</th><th>Role</th><th>Joined</th><th>Reset password</th></tr>
+      </thead>
+      <tbody>
+        {{range .Users}}
+        {{$u := .}}
+        <tr>
+          <td>{{$u.Username}} <span class="text-muted small">#{{$u.ID}}</span></td>
+          <td class="text-muted small">{{if $u.Email}}{{$u.Email}}{{else}}&mdash;{{end}}</td>
+          <td>
+            <form method="post" action="/admin/p/users/set-role" class="d-inline-flex gap-1">
+              <input type="hidden" name="user_id" value="{{$u.ID}}">
+              <select name="role" class="form-select form-select-sm" style="width:auto">
+                {{range $.Roles}}<option value="{{.Value}}"{{if eq .Value $u.Role}} selected{{end}}>{{.Label}}</option>{{end}}
+              </select>
+              <button class="btn btn-sm btn-outline-secondary" type="submit">Set</button>
+            </form>
+          </td>
+          <td class="small text-muted">{{$u.Joined}}</td>
+          <td>
+            <form method="post" action="/admin/p/users/reset-password" class="d-inline-flex gap-1">
+              <input type="hidden" name="user_id" value="{{$u.ID}}">
+              <input type="text" name="password" class="form-control form-control-sm" placeholder="new password" style="width:9rem" autocomplete="off">
+              <button class="btn btn-sm btn-outline-secondary" type="submit">Reset</button>
+            </form>
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+<p class="text-muted small mt-2 mb-0">{{.Total}} user{{if ne .Total 1}}s{{end}}</p>
