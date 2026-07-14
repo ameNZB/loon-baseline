@@ -134,6 +134,6 @@ func (h *handler) regenerate(c *gin.Context) (template.HTML, error) {
 	if _, err := h.store.Rotate(c.Request.Context(), u.ID); err != nil {
 		return "", err
 	}
-	c.Redirect(http.StatusSeeOther, pageURL+"?msg="+url.QueryEscape("API key regenerated — update your apps"))
+	c.Redirect(http.StatusSeeOther, pageURL+"?msg="+url.QueryEscape("API key regenerated — update the new key in your connected apps"))
 	return "", nil
 }
